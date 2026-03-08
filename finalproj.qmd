@@ -1,0 +1,367 @@
+---
+title: "Data Harvesting Automation"
+format: html
+editor: visual
+---
+## Libraries
+```{r}
+library(httr)
+library(jsonlite)
+library(openssl)
+library(purrr)
+library(tibble)
+library(readr)
+library(robotstxt)
+library(dplyr)
+library(rvest)
+library(stringr)
+```
+
+
+## Walmart
+```{r}
+private_key <- read_key("private_key.pem")
+consumer_id <- "3a9ebfe2-6201-4633-ac5e-9d64de20cd76"
+key_version <- "1"
+
+get_walmart_item <- function(query_term) {
+  
+  # Fresh timestamp each call
+  timestamp <- as.character(round(as.numeric(Sys.time()) * 1000))
+  
+  string_to_sign <- paste0(
+    consumer_id, "\n",
+    timestamp, "\n",
+    key_version, "\n"
+  )
+  
+  signature <- signature_create(
+    charToRaw(string_to_sign),
+    key = private_key,
+    hash = sha256
+  )
+  
+  encoded_signature <- base64_encode(signature)
+  
+  # URL encode safely
+  encoded_query <- URLencode(query_term, reserved = TRUE)
+  
+  url <- paste0(
+    "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/search?",
+    "query=", encoded_query,
+    "&numItems=1"
+  )
+  
+  response <- GET(
+    url,
+    add_headers(
+      "WM_CONSUMER.ID" = consumer_id,
+      "WM_CONSUMER.INTIMESTAMP" = timestamp,
+      "WM_SEC.KEY_VERSION" = key_version,
+      "WM_SEC.AUTH_SIGNATURE" = encoded_signature,
+      "Accept" = "application/json"
+    )
+  )
+  
+  data <- fromJSON(content(response, "text", encoding = "UTF-8"))
+  
+  if (!is.null(data$items) && length(data$items) > 0) {
+    return(data.frame(
+      item_searched = query_term,
+      name = data$items$name[1],
+      sale_price = data$items$salePrice[1]
+    ))
+  } else {
+    return(data.frame(
+      item_searched = query_term,
+      name = NA,
+      sale_price = NA
+    ))
+  }
+}
+
+get_walmart_item("milk gallon") #testing that it works
+
+items <- c(
+  "milk gallon",
+  "white bread loaf",
+  "large eggs dozen",
+  "white rice 1 lb",
+  "chicken breast"
+)
+
+walmart_products <- do.call(rbind, lapply(items, get_walmart_item))
+
+print(walmart_products)
+```
+
+## Mercadona
+```{r}
+# 1. CHECK ROBOTS.TXT ----------------------------------------
+
+base_url <- "https://tienda.mercadona.es"
+
+paths_allowed(paths = "/api",     domain = base_url)  # FALSE → API blocked
+paths_allowed(paths = "/product", domain = base_url)  # TRUE  → pages allowed
+
+# The robots.txt disallows the API, but not /product nor /sitemap.xml,
+# so products can be scraped from the website, but NOT from the API.
+# However, when inspecting the products the API is not technically blocked,
+# and it provides more consistent data than the .html pages, 
+# which are more restrictive and less consistent. 
+# Thus, and when limited to five products, the impact is minimal.
+# Moreover, ethical practices such as Sys.sleep and a custom user agent are 
+# implemented.
+
+
+# 2. USER AGENT ----------------------------------------------
+
+httr::set_config(
+  httr::user_agent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+     (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36;
+     Luis Miguel Herrera Corrales; lm.hcor@gmail.com"
+  )
+)
+
+
+# 3. PRODUCT IDs ---------------------------------------------
+
+product_ids <- c(
+  "10384",   # Leche desnatada 1L
+  "83202.1", # Barra de pan
+  "31504",   # Huevos grandes L (docena)
+  "5064",    # Arroz largo
+  "2787"     # Filetes pechuga de pollo 600g
+)
+
+
+# 4. SCRAPER FUNCTION ----------------------------------------
+
+scrape_api <- function(product_id) {
+
+  url <- paste0("https://tienda.mercadona.es/api/products/", product_id, "/")
+  message("Fetching: ", url)
+
+  Sys.sleep(runif(1, 0.5, 1.5))
+
+  response <- tryCatch(
+    httr::GET(url, httr::add_headers(
+      "Accept"          = "application/json",
+      "Accept-Language" = "es-ES,es;q=0.9",
+      "Referer"         = paste0("https://tienda.mercadona.es/product/", product_id)
+    )),
+    error = function(e) {
+      message("ERROR fetching ID: ", product_id, " - ", e$message)
+      return(NULL)
+    }
+  )
+
+  if (is.null(response) || httr::status_code(response) != 200) {
+    message("Bad response for ID: ", product_id, " - status: ", httr::status_code(response))
+    return(NULL)
+  }
+
+  data <- jsonlite::fromJSON(httr::content(response, "text", encoding = "UTF-8"))
+
+  tibble::tibble(
+    page_id      = product_id,
+    name_raw     = data$display_name,
+    brand        = ifelse(is.null(data$brand), "Hacendado", data$brand),
+    unit_price   = as.numeric(data$price_instructions$unit_price),
+    bulk_price   = as.numeric(data$price_instructions$bulk_price),
+    unit_name    = data$price_instructions$unit_name,
+    unit_size    = data$price_instructions$unit_size,
+    size_format  = data$price_instructions$size_format,
+    currency     = "EUR",
+    url          = paste0("https://tienda.mercadona.es/product/", product_id)
+  )
+}
+
+
+# 5. FETCH ALL PRODUCTS --------------------------------------
+
+mercadona_products <- purrr::map_dfr(product_ids, scrape_api)
+
+print(mercadona_products)
+
+
+# 6. SAVE OUTPUT ---------------------------------------------
+
+readr::write_csv(mercadona_products, "mercadona_products.csv")
+cat("Fichero guardado: mercadona_products.csv\n")
+```
+
+## Dia
+```{r}
+httr::set_config(
+  httr::user_agent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
+    (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36;
+     David Valero Regalón; dvalreg@gmail.com"
+  )
+)
+
+# 1. URLS ----------------------------------------------------
+dia_urls <- c(
+  leche  = "https://www.dia.es/huevos-leche-y-mantequilla/leche/p/607",
+  pan    = "https://www.dia.es/panaderia/pan-recien-horneado/p/38109",
+  huevos = "https://www.dia.es/huevos-leche-y-mantequilla/huevos/p/306230",
+  arroz  = "https://www.dia.es/arroz-pastas-y-legumbres/arroz/p/5873",
+  pollo  = "https://www.dia.es/carnes/pollo/p/287571"
+)
+
+# 2. SCRAPING FUNCTION ---------------------------------------
+scrape_dia_product <- function(url) {
+  
+  Sys.sleep(2)
+  
+  response <- GET(
+    url,
+    add_headers(
+      `User-Agent`      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      `Accept-Language` = "es-ES,es;q=0.9"
+    )
+  )
+  
+  if (status_code(response) != 200) {
+    message("Error loading: ", url)
+    return(NULL)
+  }
+  
+  page <- read_html(content(response, "text", encoding = "UTF-8"))
+  
+  # Extract raw data
+  page_id <- str_extract(url, "\\d+$")
+  name_raw <- page %>% html_element(".product-title") %>% html_text2()
+  price_text <- page %>% html_element(".buy-box__active-price") %>% html_text2()
+  bulk_text  <- page %>% html_element(".buy-box__price-per-unit") %>% html_text2()
+  
+  # Clean and format data
+  unit_price <- as.numeric(str_replace(str_extract(price_text, "[0-9,]+"), ",", "."))
+  bulk_price <- as.numeric(str_replace(str_extract(bulk_text, "[0-9,]+"), ",", "."))
+  unit_name <- str_extract(bulk_text, "(?<=/)[A-Z]+")
+  unit_size <- str_extract(tolower(name_raw), "[0-9]+(?=\\s*(g|kg|l|ml|unidades|uds))")
+  
+  # Return tibble matching Mercadona's structure
+  # Two columns are excluded: brand and size format because of lack of data
+  # in Alibaba and Dia
+  return(tibble(
+    page_id      = page_id,
+    name_raw     = name_raw,
+    unit_price   = unit_price,
+    bulk_price   = bulk_price,
+    unit_name    = unit_name,
+    unit_size    = unit_size,
+    currency     = "EUR",
+    url          = url
+  ))
+}
+
+# 3. EXECUTE SCRAPER -----------------------------------------
+message("Starting DIA extraction...")
+dia_products <- lapply(dia_urls, scrape_dia_product) %>% bind_rows()
+
+print(dia_products)
+
+```
+
+## Currency Conversion
+```{r}
+get_live_exchange_rate <- function() {
+  url <- "https://api.frankfurter.app/latest?from=USD&to=EUR"
+  
+  response <- tryCatch(GET(url), error = function(e) NULL)
+  
+  if (!is.null(response) && status_code(response) == 200) {
+    data <- fromJSON(content(response, "text", encoding = "UTF-8"))
+    real_rate <- data$rates$EUR
+    message("Live exchange rate applied: 1 USD = ", real_rate, " EUR")
+    return(real_rate)
+  } else {
+    message("API connection failed. Using fallback exchange rate (0.92)")
+    return(0.92) 
+  }
+}
+
+usd_to_eur_rate <- get_live_exchange_rate() 
+
+oz_to_kg <- 0.0283495 
+lb_to_kg <- 0.453592
+gal_to_l <- 3.78541
+
+message("Standardizing tables and applying conversions...")
+
+# A. DIA & Mercadona (Standardize formats and drop empty columns safely)
+dia_std <- dia_products %>% 
+  mutate(
+    supermarket = "DIA",
+    unit_size = as.character(unit_size)
+  ) %>%
+  select(-any_of(c("brand", "size_format"))) 
+
+mercadona_std <- mercadona_products %>% 
+  mutate(
+    supermarket = "Mercadona",
+    unit_size = as.character(unit_size)
+  ) %>%
+  select(-any_of(c("brand", "size_format"))) 
+
+# B. Walmart (Currency & Unit Conversions)
+walmart_std <- walmart_products %>%
+  rename(
+    name_raw = name,
+    unit_price = sale_price
+  ) %>%
+  mutate(
+    supermarket = "Walmart",
+    page_id     = NA_character_,
+    url         = NA_character_,
+    
+    # 1. Currency to EUR
+    currency   = "EUR",
+    unit_price = round(unit_price * usd_to_eur_rate, 2),
+    
+    # 2. Extract US units
+    search_text = tolower(paste(item_searched, name_raw)),
+    
+    size_num_us = as.numeric(str_extract(search_text, "[0-9]+(?:\\.[0-9]+)?(?=\\s*(oz|lb|gallon|gal|dozen))")),
+    size_num_us = ifelse(is.na(size_num_us), 1, size_num_us),
+    
+    unit_us = str_extract(search_text, "(oz|lb|gallon|gal|dozen)"),
+    
+    # 3. Metric conversion
+    unit_size_num = case_when(
+      unit_us %in% c("gallon", "gal") ~ size_num_us * gal_to_l,
+      unit_us == "lb" ~ size_num_us * lb_to_kg,
+      unit_us == "oz" ~ size_num_us * oz_to_kg,
+      unit_us == "dozen" ~ 12,
+      TRUE ~ size_num_us
+    ),
+    
+    # 4. Final metric label
+    unit_name = case_when(
+      unit_us %in% c("gallon", "gal") ~ "L",
+      unit_us %in% c("lb", "oz") ~ "kg",
+      unit_us == "dozen" ~ "ud",
+      TRUE ~ "ud"
+    ),
+    
+    # 5. Calculate bulk_price (Price per Kg/L)
+    bulk_price = round(unit_price / unit_size_num, 2),
+    
+    # Match data type with DIA and Mercadona
+    unit_size = as.character(round(unit_size_num, 2))
+  ) %>%
+  select(-item_searched, -search_text, -size_num_us, -unit_us, -unit_size_num)
+
+# 3. MASTER MERGE & EXPORT -----------------------------------
+message("Merging data into master table...")
+
+cpi_master_data <- bind_rows(dia_std, mercadona_std, walmart_std)
+
+write_csv(cpi_master_data, "cpi_master_data_final.csv")
+
+message("Success! Data exported as 'cpi_master_data_final.csv'")
+```
+
