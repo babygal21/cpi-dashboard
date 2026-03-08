@@ -1,9 +1,12 @@
 ---
-title: "Data Harvesting Automation"
+title: "cpi-dashboard"
 format: html
 editor: visual
+output-file: index.html
 ---
+
 ## Libraries
+
 ```{r}
 library(httr)
 library(jsonlite)
@@ -17,8 +20,8 @@ library(rvest)
 library(stringr)
 ```
 
-
 ## Walmart
+
 ```{r}
 private_key <- read_key("private_key.pem")
 consumer_id <- "3a9ebfe2-6201-4633-ac5e-9d64de20cd76"
@@ -96,6 +99,7 @@ print(walmart_products)
 ```
 
 ## Mercadona
+
 ```{r}
 # 1. CHECK ROBOTS.TXT ----------------------------------------
 
@@ -193,6 +197,7 @@ cat("Fichero guardado: mercadona_products.csv\n")
 ```
 
 ## Dia
+
 ```{r}
 httr::set_config(
   httr::user_agent(
@@ -267,6 +272,7 @@ print(dia_products)
 ```
 
 ## Currency Conversion
+
 ```{r}
 get_live_exchange_rate <- function() {
   url <- "https://api.frankfurter.app/latest?from=USD&to=EUR"
@@ -364,4 +370,3 @@ write_csv(cpi_master_data, "cpi_master_data_final.csv")
 
 message("Success! Data exported as 'cpi_master_data_final.csv'")
 ```
-
