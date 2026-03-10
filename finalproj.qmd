@@ -1,13 +1,26 @@
 ---
-title: "cpi-dashboard"
-format: html
-editor: visual
+title: "CPI Dashboard"
+subtitle: "CPI Basket Analysis Across Mercadona, Dia, and Walmart"
 output-file: index.html
+format:
+  html:
+    theme: cosmo
+    toc: false
+    page-layout: full
+execute:
+  echo: false
 ---
 
-## Libraries
+```{=html}
+<style>
+h1,h2 {font-weight:600}
+body {max-width:1400px;margin:auto}
+</style>
+```
+
 
 ```{r, include = FALSE}
+#libraries
 library(httr)
 library(jsonlite)
 library(openssl)
@@ -24,9 +37,8 @@ library(knitr)
 library(scales)
 ```
 
-## Walmart
-
 ```{r, include = FALSE}
+#walmart
 private_key <- read_key("private_key.pem")
 consumer_id <- "3a9ebfe2-6201-4633-ac5e-9d64de20cd76"
 key_version <- "1"
@@ -102,9 +114,9 @@ walmart_products <- do.call(rbind, lapply(items, get_walmart_item))
 print(walmart_products)
 ```
 
-## Mercadona
 
 ```{r, include = FALSE}
+#mercadona
 # 1. CHECK ROBOTS.TXT ----------------------------------------
 
 base_url <- "https://tienda.mercadona.es"
@@ -200,9 +212,8 @@ readr::write_csv(mercadona_products, "mercadona_products.csv")
 cat("Fichero guardado: mercadona_products.csv\n")
 ```
 
-## Dia
-
 ```{r, include = FALSE}
+#dia 
 httr::set_config(
   httr::user_agent(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
@@ -275,9 +286,8 @@ print(dia_products)
 
 ```
 
-## Currency Conversion
-
 ```{r, include = FALSE}
+#exchange
 get_live_exchange_rate <- function() {
   url <- "https://api.frankfurter.app/latest?from=USD&to=EUR"
   
@@ -375,12 +385,15 @@ write_csv(cpi_master_data, "cpi_master_data_final.csv")
 message("Success! Data exported as 'cpi_master_data_final.csv'")
 ```
 
-## Dashboard
 ```{r}
+#dashboard
+# Load data
 df <- read.csv("cpi_master_data_final.csv", stringsAsFactors = FALSE)
 
+# Convert price format
 df$unit_price <- as.numeric(gsub(",", ".", df$unit_price))
 
+# Category mapping
 df <- df %>%
   mutate(category = case_when(
     grepl("arroz|rice", name_raw, ignore.case = TRUE) ~ "Rice",
@@ -390,32 +403,70 @@ df <- df %>%
     grepl("pan|bread", name_raw, ignore.case = TRUE) ~ "Bread",
     TRUE ~ "Other"
   ))
+```
 
-df %>%
-  group_by(supermarket, category) %>%
-  summarise(avg_price = mean(unit_price, na.rm = TRUE)) %>%
-  ggplot(aes(category, avg_price, fill = supermarket)) +
-  geom_col(position = "dodge") +
-  labs(
-    title = "Average Price by Category and Store",
-    x = "Category",
-    y = "Average Price (€)"
-  ) +
-  theme_minimal()
+```{r}
+avg_price <- mean(df$unit_price, na.rm=TRUE)
+price_sd <- sd(df$unit_price, na.rm=TRUE)
+n_items <- nrow(df)
 
+kpi <- data.frame(
+Metric=c("Average Price (€)","Price Volatility","Items Analyzed"),
+Value=c(round(avg_price,2), round(price_sd,2), n_items)
+)
+
+kable(kpi)
+```
+
+```{r}
 df %>%
   group_by(supermarket) %>%
-  summarise(mean_price = mean(unit_price, na.rm = TRUE)) %>%
-  ggplot(aes(x = supermarket, y = mean_price, fill = supermarket)) +
-  geom_col(width = 0.6) +
-  geom_text(aes(label = paste0(round(mean_price,2),"€")),
-            vjust = -0.5,
-            fontface = "bold") +
+  summarise(mean_price = mean(unit_price, na.rm=TRUE)) %>%
+  ggplot(aes(supermarket, mean_price, fill=supermarket)) +
+  geom_col(width=.6) +
+  geom_text(aes(label=paste0(round(mean_price,2),"€")),
+            vjust=-0.4,fontface="bold") +
   labs(
-    title = "Average Price by Supermarket",
-    y = "Mean Price (€)",
-    x = ""
+    title="Average Grocery Basket Price by Retailer",
+    x="",
+    y="Average Price (€)"
   ) +
-  theme_minimal() +
-  theme(legend.position = "none")
+  theme_minimal(base_size = 14) +
+  theme(legend.position="none")
+```
+
+```{r}
+ggplot(df, aes(supermarket, unit_price, fill=supermarket)) +
+  geom_boxplot(alpha=.7) +
+  labs(
+    title="Price Distribution Across Retailers",
+    x="",
+    y="Unit Price (€)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position="none")
+```
+
+```{r}
+df %>%
+  group_by(supermarket, category) %>%
+  summarise(avg_price = mean(unit_price, na.rm=TRUE)) %>%
+  ggplot(aes(category, avg_price, fill=supermarket)) +
+  geom_col(position="dodge") +
+  labs(
+    title="Average Price by Product Category",
+    x="Product Category",
+    y="Average Price (€)"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+```{r}
+df %>%
+  group_by(supermarket) %>%
+  summarise(avg_price = mean(unit_price, na.rm=TRUE)) %>%
+  arrange(avg_price) %>%
+  rename("Retailer"=supermarket,
+         "Average Price (€)"=avg_price) %>%
+  kable(digits=2)
 ```
