@@ -1,6 +1,5 @@
 ---
-title: "cpi-dashboard"
-subtitle: "CPI Basket Analysis Across Mercadona, Dia, and Walmart"
+title: "CPI Dashboard"
 output-file: index.html
 format:
   html:
